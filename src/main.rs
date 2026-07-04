@@ -42,6 +42,7 @@ fn run() -> anyhow::Result<()> {
         cutoff_unix,
         args.apply,
         args.prune_memories,
+        args.prune_diagnostics,
         &mut summary,
     );
 

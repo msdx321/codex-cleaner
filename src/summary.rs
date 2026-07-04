@@ -53,6 +53,9 @@ impl Summary {
         println!();
 
         for (name, bucket) in &self.buckets {
+            if bucket.is_empty() {
+                continue;
+            }
             println!("{name}:");
             if bucket.matched_files > 0 || bucket.deleted_files > 0 || bucket.deleted_dirs > 0 {
                 println!(
@@ -87,6 +90,19 @@ impl Summary {
                 println!("  - {warning}");
             }
         }
+    }
+}
+
+impl Bucket {
+    fn is_empty(&self) -> bool {
+        self.matched_files == 0
+            && self.deleted_files == 0
+            && self.deleted_dirs == 0
+            && self.matched_bytes == 0
+            && self.deleted_bytes == 0
+            && self.matched_rows == 0
+            && self.deleted_rows == 0
+            && self.skipped == 0
     }
 }
 

@@ -21,6 +21,7 @@ pub fn clean_sqlite(
     cutoff_unix: i64,
     apply: bool,
     prune_memories: bool,
+    prune_diagnostics: bool,
     summary: &mut Summary,
 ) {
     if let Err(err) = clean_sessions(codex_home, cutoff_unix, apply, summary) {
@@ -28,6 +29,14 @@ pub fn clean_sqlite(
     }
     if let Err(err) = clean_logs_by_age(codex_home, cutoff_unix, apply, summary) {
         summary.warn(format!("log cleanup failed: {err:#}"));
+    }
+    if let Err(err) = clean_orphan_thread_logs(codex_home, apply, summary) {
+        summary.warn(format!("orphan thread log cleanup failed: {err:#}"));
+    }
+    if prune_diagnostics
+        && let Err(err) = clean_remaining_diagnostic_logs(codex_home, cutoff_unix, apply, summary)
+    {
+        summary.warn(format!("diagnostic log cleanup failed: {err:#}"));
     }
     if prune_memories
         && let Err(err) = clean_stale_memories(codex_home, cutoff_unix, apply, summary)
@@ -72,6 +81,102 @@ fn clean_logs_by_age(
         connection
             .execute_batch("PRAGMA wal_checkpoint(TRUNCATE); VACUUM; PRAGMA optimize;")
             .context("maintain logs database")?;
+    }
+
+    Ok(())
+}
+
+fn clean_orphan_thread_logs(
+    codex_home: &Path,
+    apply: bool,
+    summary: &mut Summary,
+) -> anyhow::Result<()> {
+    let logs_path = codex_home.join("logs_2.sqlite");
+    let state_path = codex_home.join("state_5.sqlite");
+    if !state_path.exists() {
+        return Ok(());
+    }
+    let Some(connection) = open_existing(&logs_path)? else {
+        return Ok(());
+    };
+
+    attach_db(&connection, "state", &state_path)?;
+    let matched: u64 = connection.query_row(
+        r#"
+SELECT COUNT(*)
+FROM logs
+LEFT JOIN state.threads ON logs.thread_id = state.threads.id
+WHERE logs.thread_id IS NOT NULL AND state.threads.id IS NULL
+        "#,
+        [],
+        |row| row.get(0),
+    )?;
+    summary.bucket_mut("orphan-logs-db").matched_rows += matched;
+
+    if apply && matched > 0 {
+        let deleted = connection.execute(
+            r#"
+DELETE FROM logs
+WHERE thread_id IS NOT NULL
+  AND NOT EXISTS (
+      SELECT 1 FROM state.threads WHERE state.threads.id = logs.thread_id
+  )
+            "#,
+            [],
+        )? as u64;
+        summary.bucket_mut("orphan-logs-db").deleted_rows += deleted;
+        connection
+            .execute_batch("PRAGMA wal_checkpoint(TRUNCATE); VACUUM; PRAGMA optimize;")
+            .context("maintain logs database after orphan cleanup")?;
+    }
+
+    Ok(())
+}
+
+fn clean_remaining_diagnostic_logs(
+    codex_home: &Path,
+    cutoff_unix: i64,
+    apply: bool,
+    summary: &mut Summary,
+) -> anyhow::Result<()> {
+    let logs_path = codex_home.join("logs_2.sqlite");
+    let state_path = codex_home.join("state_5.sqlite");
+    let Some(connection) = open_existing(&logs_path)? else {
+        return Ok(());
+    };
+
+    let matched = if apply {
+        connection.query_row("SELECT COUNT(*) FROM logs", [], |row| row.get::<_, u64>(0))?
+    } else if state_path.exists() {
+        attach_db(&connection, "state", &state_path)?;
+        connection.query_row(
+            r#"
+SELECT COUNT(*)
+FROM logs
+WHERE ts >= ?
+  AND (
+      logs.thread_id IS NULL
+      OR EXISTS (SELECT 1 FROM state.threads WHERE state.threads.id = logs.thread_id)
+  )
+            "#,
+            params![cutoff_unix],
+            |row| row.get::<_, u64>(0),
+        )?
+    } else {
+        connection.query_row(
+            "SELECT COUNT(*) FROM logs WHERE ts >= ?",
+            params![cutoff_unix],
+            |row| row.get::<_, u64>(0),
+        )?
+    };
+    summary.bucket_mut("diagnostic-logs-db").matched_rows += matched;
+
+    if apply && matched > 0 {
+        let deleted = connection.execute("DELETE FROM logs", [])? as u64;
+        summary.bucket_mut("diagnostic-logs-db").deleted_rows += deleted;
+        connection
+            .execute_batch("PRAGMA wal_checkpoint(TRUNCATE); VACUUM; PRAGMA optimize;")
+            .context("maintain logs database after diagnostic cleanup")?;
     }
 
     Ok(())
@@ -308,6 +413,17 @@ fn maintain_optional_db(path: &Path, summary: &mut Summary, bucket: &str) -> any
         summary.warn(format!("failed to maintain {}: {err}", path.display()));
     }
     summary.bucket_mut(bucket);
+    Ok(())
+}
+
+fn attach_db(connection: &Connection, schema: &str, path: &Path) -> anyhow::Result<()> {
+    let path = path
+        .to_str()
+        .ok_or_else(|| anyhow::anyhow!("sqlite path is not valid UTF-8: {}", path.display()))?;
+    let escaped_path = path.replace('\'', "''");
+    connection
+        .execute_batch(&format!("ATTACH DATABASE '{escaped_path}' AS {schema}"))
+        .with_context(|| format!("attach sqlite db {path} as {schema}"))?;
     Ok(())
 }
 

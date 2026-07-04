@@ -21,6 +21,10 @@ pub struct Args {
     #[arg(long)]
     pub prune_memories: bool,
 
+    /// Delete all remaining SQLite log rows, including active-thread and threadless diagnostics.
+    #[arg(long)]
+    pub prune_diagnostics: bool,
+
     /// Emit JSON instead of human-readable output.
     #[arg(long)]
     pub json: bool,
