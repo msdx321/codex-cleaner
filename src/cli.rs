@@ -10,7 +10,7 @@ pub struct Args {
     pub codex_home: Option<PathBuf>,
 
     /// Retention window in days.
-    #[arg(long, default_value_t = 7)]
+    #[arg(long, default_value_t = 30)]
     pub days: i64,
 
     /// Delete files and rows. Without this flag, only report planned work.
