@@ -36,6 +36,10 @@ fn run() -> anyhow::Result<()> {
 
     let mut summary = Summary::new(&codex_home, cutoff_unix, cutoff_dt.to_rfc3339(), args.apply);
 
+    if args.compact_memories {
+        let path = fs_clean::write_memory_compaction_note(&codex_home, args.apply)?;
+        summary.memory_compaction_note = Some(path.display().to_string());
+    }
     fs_clean::clean_generated_trees(&codex_home, cutoff_system, args.apply, &mut summary);
     sqlite_clean::clean_sqlite(
         &codex_home,

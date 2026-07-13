@@ -1,11 +1,13 @@
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 use anyhow::Context;
 use walkdir::WalkDir;
 
 use crate::summary::Summary;
+
+const MEMORY_COMPACTION_NOTE: &str = include_str!("../templates/memory_compaction.md");
 
 pub fn clean_generated_trees(
     codex_home: &Path,
@@ -24,6 +26,21 @@ pub fn clean_generated_trees(
             summary.warn(format!("failed to clean {}: {err:#}", root.display()));
         }
     }
+}
+
+pub fn write_memory_compaction_note(codex_home: &Path, apply: bool) -> anyhow::Result<PathBuf> {
+    let notes_dir = codex_home.join("memories/extensions/ad_hoc/notes");
+    let path = notes_dir.join(format!(
+        "{}-compact-memory.md",
+        chrono::Utc::now().format("%Y%m%dT%H%M%SZ")
+    ));
+    if apply {
+        fs::create_dir_all(&notes_dir)
+            .with_context(|| format!("create {}", notes_dir.display()))?;
+        fs::write(&path, MEMORY_COMPACTION_NOTE)
+            .with_context(|| format!("write {}", path.display()))?;
+    }
+    Ok(path)
 }
 
 fn clean_tree(

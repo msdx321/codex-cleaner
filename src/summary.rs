@@ -21,6 +21,8 @@ pub struct Summary {
     pub cutoff_unix: i64,
     pub cutoff: String,
     pub apply: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub memory_compaction_note: Option<String>,
     pub buckets: BTreeMap<String, Bucket>,
     pub warnings: Vec<String>,
 }
@@ -32,6 +34,7 @@ impl Summary {
             cutoff_unix,
             cutoff,
             apply,
+            memory_compaction_note: None,
             buckets: BTreeMap::new(),
             warnings: Vec::new(),
         }
@@ -81,6 +84,11 @@ impl Summary {
             if bucket.skipped > 0 {
                 println!("  skipped: {}", bucket.skipped);
             }
+        }
+
+        if let Some(path) = &self.memory_compaction_note {
+            let action = if self.apply { "wrote" } else { "would write" };
+            println!("memory compaction note: {action} {path}");
         }
 
         if !self.warnings.is_empty() {

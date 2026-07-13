@@ -13,13 +13,17 @@ pub struct Args {
     #[arg(long, default_value_t = 30)]
     pub days: i64,
 
-    /// Delete files and rows. Without this flag, only report planned work.
+    /// Make changes. Without this flag, only report planned work.
     #[arg(long)]
     pub apply: bool,
 
     /// Also prune stale, unselected memory stage-1 rows.
     #[arg(long)]
     pub prune_memories: bool,
+
+    /// Write an ad hoc note requesting memory compaction.
+    #[arg(long)]
+    pub compact_memories: bool,
 
     /// Delete all remaining SQLite log rows, including active-thread and threadless diagnostics.
     #[arg(long)]

@@ -20,7 +20,8 @@ under the Codex home directory:
 - orphan log rows whose thread no longer exists
 
 Optional flags can also prune stale memory stage-1 rows and remaining diagnostic
-log rows.
+log rows. `--compact-memories` writes an ad hoc note asking Codex to retain only
+important memory and discard transient history and tool-assignment prompts.
 
 ## Install
 
@@ -74,6 +75,13 @@ Emit JSON:
 cargo run -- --codex-home ~/.codex --json
 ```
 
+Preview or write a memory compaction note:
+
+```sh
+cargo run -- --codex-home ~/.codex --compact-memories
+cargo run -- --codex-home ~/.codex --compact-memories --apply
+```
+
 ## Options
 
 ```text
@@ -82,8 +90,9 @@ Usage: codex-cleaner [OPTIONS]
 Options:
       --codex-home <CODEX_HOME>  Codex home directory. Defaults to CODEX_HOME or ~/.codex
       --days <DAYS>              Retention window in days [default: 30]
-      --apply                    Delete files and rows. Without this flag, only report planned work
+      --apply                    Make changes. Without this flag, only report planned work
       --prune-memories           Also prune stale, unselected memory stage-1 rows
+      --compact-memories         Write an ad hoc note requesting memory compaction
       --prune-diagnostics        Delete all remaining SQLite log rows, including active-thread and threadless diagnostics
       --json                     Emit JSON instead of human-readable output
   -h, --help                     Print help
