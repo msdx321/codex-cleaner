@@ -66,11 +66,12 @@ fn clean_logs_by_age(
         return Ok(());
     };
 
-    let matched: u64 = connection.query_row(
+    let matched: i64 = connection.query_row(
         "SELECT COUNT(*) FROM logs WHERE ts < ?",
         params![cutoff_unix],
         |row| row.get(0),
     )?;
+    let matched = u64::try_from(matched)?;
     summary.bucket_mut("logs-db").matched_rows += matched;
 
     if apply && matched > 0 {
@@ -101,7 +102,7 @@ fn clean_orphan_thread_logs(
     };
 
     attach_db(&connection, "state", &state_path)?;
-    let matched: u64 = connection.query_row(
+    let matched: i64 = connection.query_row(
         r#"
 SELECT COUNT(*)
 FROM logs
@@ -111,6 +112,7 @@ WHERE logs.thread_id IS NOT NULL AND state.threads.id IS NULL
         [],
         |row| row.get(0),
     )?;
+    let matched = u64::try_from(matched)?;
     summary.bucket_mut("orphan-logs-db").matched_rows += matched;
 
     if apply && matched > 0 {
@@ -145,8 +147,8 @@ fn clean_remaining_diagnostic_logs(
         return Ok(());
     };
 
-    let matched = if apply {
-        connection.query_row("SELECT COUNT(*) FROM logs", [], |row| row.get::<_, u64>(0))?
+    let matched: i64 = if apply {
+        connection.query_row("SELECT COUNT(*) FROM logs", [], |row| row.get(0))?
     } else if state_path.exists() {
         attach_db(&connection, "state", &state_path)?;
         connection.query_row(
@@ -160,15 +162,16 @@ WHERE ts >= ?
   )
             "#,
             params![cutoff_unix],
-            |row| row.get::<_, u64>(0),
+            |row| row.get(0),
         )?
     } else {
         connection.query_row(
             "SELECT COUNT(*) FROM logs WHERE ts >= ?",
             params![cutoff_unix],
-            |row| row.get::<_, u64>(0),
+            |row| row.get(0),
         )?
     };
+    let matched = u64::try_from(matched)?;
     summary.bucket_mut("diagnostic-logs-db").matched_rows += matched;
 
     if apply && matched > 0 {
@@ -192,11 +195,12 @@ fn clean_stale_memories(
     let Some(mut connection) = open_existing(&path)? else {
         return Ok(());
     };
-    let matched: u64 = connection.query_row(
+    let matched: i64 = connection.query_row(
         "SELECT COUNT(*) FROM stage1_outputs WHERE selected_for_phase2 = 0 AND COALESCE(last_usage, source_updated_at) < ?",
         params![cutoff_unix],
         |row| row.get(0),
     )?;
+    let matched = u64::try_from(matched)?;
     summary.bucket_mut("memories-db").matched_rows += matched;
 
     if apply && matched > 0 {
