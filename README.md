@@ -201,8 +201,15 @@ MIT. See [LICENSE](LICENSE).
 
 ## Homebrew Release Updates
 
-Publishing a stable GitHub release triggers **Update Homebrew tap** in this
-repository. It updates the formula in `msdx321/homebrew-tap`; the resulting
+To release, update the version in `Cargo.toml` and `Cargo.lock`, commit and push,
+then create and push a matching stable tag (for example `v1.0.0`). The **Release**
+workflow checks the tag against the package version, runs formatting, Clippy,
+and tests, then publishes a GitHub release with generated notes. It also supports
+manual runs with an existing tag, including tags created before this workflow.
+
+After publishing, **Release** calls **Update Homebrew tap** directly. Manually
+published stable GitHub releases also trigger **Update Homebrew tap**. The workflow
+updates the formula in `msdx321/homebrew-tap`; the resulting
 formula commit triggers the tap's verification CI. There is no scheduled polling.
 Set `HOMEBREW_TAP_DEPLOY_KEY` in this repository's Actions secrets to an SSH private
 key with write access to the tap, matching ProxyBear's release setup. The tap's

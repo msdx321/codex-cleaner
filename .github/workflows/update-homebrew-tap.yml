@@ -1,6 +1,10 @@
 name: Update Homebrew tap
 
 on:
+  workflow_call:
+    secrets:
+      HOMEBREW_TAP_DEPLOY_KEY:
+        required: true
   release:
     types: [published]
 
@@ -13,7 +17,7 @@ concurrency:
 
 jobs:
   update-tap:
-    if: github.event.release.prerelease == false && github.event.release.draft == false
+    if: github.event_name != 'release' || (github.event.release.prerelease == false && github.event.release.draft == false)
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
