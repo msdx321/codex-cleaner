@@ -9,6 +9,10 @@ pub struct Args {
     #[arg(long)]
     pub codex_home: Option<PathBuf>,
 
+    /// SQLite directory, if Codex's sqlite_home setting differs from CODEX_HOME.
+    #[arg(long)]
+    pub sqlite_home: Option<PathBuf>,
+
     /// Retention window in days.
     #[arg(long, default_value_t = 30)]
     pub days: i64,

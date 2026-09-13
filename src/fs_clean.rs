@@ -17,9 +17,9 @@ pub fn clean_generated_trees(
 ) {
     for (bucket, rel) in [
         ("cache", "cache"),
-        ("plugin-cache", "plugins/cache"),
         ("tmp", "tmp"),
         ("dot-tmp", ".tmp"),
+        ("file-logs", "log"),
     ] {
         let root = codex_home.join(rel);
         if let Err(err) = clean_tree(bucket, &root, cutoff, apply, summary) {
@@ -50,16 +50,33 @@ fn clean_tree(
     apply: bool,
     summary: &mut Summary,
 ) -> anyhow::Result<()> {
-    if !root.exists() {
+    if !root.try_exists()? {
         return Ok(());
     }
+    anyhow::ensure!(
+        !fs::symlink_metadata(root)?.file_type().is_symlink(),
+        "refusing symlinked cleanup root"
+    );
 
     let mut dirs = Vec::new();
-    for entry in WalkDir::new(root).follow_links(false).into_iter() {
+    for entry in WalkDir::new(root)
+        .follow_links(false)
+        .follow_root_links(false)
+        .into_iter()
+        .filter_entry(|entry| {
+            // Codex owns these runtime locks and plugin checkouts, regardless of age.
+            !matches!(
+                entry.file_name().to_str(),
+                Some("arg0" | "plugins" | "marketplaces" | "bundled-marketplaces")
+            ) && !entry.file_name().to_string_lossy().ends_with(".lock")
+        })
+    {
         let entry = entry?;
         let path = entry.path();
         if entry.file_type().is_dir() {
-            dirs.push(path.to_path_buf());
+            if entry.metadata()?.modified()? < cutoff {
+                dirs.push(path.to_path_buf());
+            }
             continue;
         }
         if !entry.file_type().is_file() {

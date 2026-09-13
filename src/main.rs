@@ -25,9 +25,13 @@ fn run() -> anyhow::Result<()> {
         anyhow::bail!("--days must be non-negative");
     }
 
-    let codex_home = args.codex_home()?;
+    let codex_home = args
+        .codex_home()?
+        .canonicalize()
+        .context("resolve Codex home")?;
+    anyhow::ensure!(codex_home.is_dir(), "Codex home must be a directory");
     let cutoff_dt = Utc::now()
-        .checked_sub_signed(Duration::days(args.days))
+        .checked_sub_signed(Duration::try_days(args.days).context("retention window overflow")?)
         .context("retention cutoff overflow")?;
     let cutoff_unix = cutoff_dt.timestamp();
     let cutoff_system = SystemTime::UNIX_EPOCH
@@ -41,14 +45,7 @@ fn run() -> anyhow::Result<()> {
         summary.memory_compaction_note = Some(path.display().to_string());
     }
     fs_clean::clean_generated_trees(&codex_home, cutoff_system, args.apply, &mut summary);
-    sqlite_clean::clean_sqlite(
-        &codex_home,
-        cutoff_unix,
-        args.apply,
-        args.prune_memories,
-        args.prune_diagnostics,
-        &mut summary,
-    );
+    sqlite_clean::clean_sqlite(&codex_home, cutoff_unix, &args, &mut summary);
 
     if args.json {
         println!("{}", serde_json::to_string_pretty(&summary)?);
@@ -56,5 +53,9 @@ fn run() -> anyhow::Result<()> {
         summary.print_human();
     }
 
+    anyhow::ensure!(
+        summary.warnings.is_empty(),
+        "cleanup incomplete; see warnings above"
+    );
     Ok(())
 }
