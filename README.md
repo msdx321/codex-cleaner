@@ -36,13 +36,9 @@ Install the latest published release through Homebrew:
 brew install msdx321/tap/codex-cleaner
 ```
 
-The tap builds from a checksummed source archive and requires Rust at build time.
-Publishing a stable GitHub release updates the tap. To build the repository's
-default branch:
-
-```sh
-brew install --HEAD msdx321/tap/codex-cleaner
-```
+The tap installs checksummed binaries built in CI for Apple Silicon and Intel
+macOS, and ARM64 and x86-64 Linux. Rust and LLVM are not required. Linux binaries
+require glibc 2.35 or later. Publishing a stable GitHub release updates the tap.
 
 Install from GitHub with Cargo:
 
@@ -204,7 +200,8 @@ MIT. See [LICENSE](LICENSE).
 To release, update the version in `Cargo.toml` and `Cargo.lock`, commit and push,
 then create and push a matching stable tag (for example `v1.0.0`). The **Release**
 workflow checks the tag against the package version, runs formatting, Clippy,
-and tests, then publishes a GitHub release with generated notes. It also supports
+and tests, then builds binaries for macOS and Linux on both architectures and
+publishes them with SHA-256 checksums and generated release notes. It also supports
 manual runs with an existing tag, including tags created before this workflow.
 
 After publishing, **Release** calls **Update Homebrew tap** directly. Manually

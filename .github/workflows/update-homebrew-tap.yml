@@ -30,7 +30,7 @@ jobs:
 
       - uses: astral-sh/setup-uv@v10.0.1
 
-      - name: Update formula from the published release
+      - name: Update binary formula from the published release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
