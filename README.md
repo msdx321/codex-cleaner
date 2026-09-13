@@ -3,8 +3,10 @@
 `codex-cleaner` is a small Rust CLI for pruning old generated Codex state from a
 local Codex home directory.
 
-It is dry-run by default. It reports what would be removed, and only mutates
-files or SQLite databases when `--apply` is passed.
+In a terminal, it opens an interactive menu by default: choose settings, preview
+cleanup, then confirm whether to apply it. Pressing Enter at the final confirmation
+keeps everything. Use `--dry-run` for a preview only or `--apply` to clean directly.
+When input or output is redirected, it defaults to a non-interactive preview.
 
 ## What It Cleans
 
@@ -15,6 +17,8 @@ under the Codex home directory:
 - `tmp/`
 - `.tmp/` (excluding runtime locks and plugin checkouts)
 - old files in `log/`
+- old files ending in `.tmp` elsewhere under the Codex home directory, reported
+  as `tmp-files` (excluding protected directories listed below)
 - old session rows, matching rollout files, and associated history, metadata,
   memory, queue revision, and completed-goal rows
 - old log rows in `logs_2.sqlite`
@@ -66,10 +70,23 @@ target/release/codex-cleaner
 
 ## Usage
 
+Open the interactive cleanup menu:
+
+```sh
+cargo run --
+cargo run -- --days 60
+```
+
+The menu lets you change retention and toggle optional memory and diagnostic
+cleanup. Paths are supplied with `--codex-home` and `--sqlite-home`. Cleanup runs
+only after a successful preview and an explicit yes. EOF or a negative answer
+cancels without changes. Apply rechecks eligible files and rows using the preview's
+retention cutoff, so results can differ if another process changes state.
+
 Preview cleanup work without deleting anything:
 
 ```sh
-cargo run -- --codex-home ~/.codex
+cargo run -- --codex-home ~/.codex --dry-run
 ```
 
 Apply the cleanup:
@@ -81,7 +98,7 @@ cargo run -- --codex-home ~/.codex --apply
 Use a custom retention window:
 
 ```sh
-cargo run -- --codex-home ~/.codex --days 60
+cargo run -- --codex-home ~/.codex --days 60 --dry-run
 ```
 
 Emit JSON:
@@ -93,7 +110,7 @@ cargo run -- --codex-home ~/.codex --json
 Preview or write a memory compaction note:
 
 ```sh
-cargo run -- --codex-home ~/.codex --compact-memories
+cargo run -- --codex-home ~/.codex --compact-memories --dry-run
 cargo run -- --codex-home ~/.codex --compact-memories --apply
 ```
 
@@ -105,8 +122,10 @@ Usage: codex-cleaner [OPTIONS]
 Options:
       --codex-home <CODEX_HOME>  Codex home directory. Defaults to CODEX_HOME or ~/.codex
       --sqlite-home <SQLITE_HOME> SQLite directory when Codex's sqlite_home setting differs
-      --days <DAYS>              Retention window in days [default: 30]
-      --apply                    Make changes. Without this flag, only report planned work
+  -d, --days <DAYS>              Retention window in days [default: 30]
+  -i, --interactive              Configure, preview, then confirm cleanup (requires a terminal)
+  -n, --dry-run                  Preview without prompting or changing anything
+      --apply                    Apply directly without the menu or confirmation
       --prune-memories           Also prune stale, unselected memory stage-1 rows
       --compact-memories         Write an ad hoc note requesting memory compaction
       --prune-diagnostics        Delete all remaining SQLite log rows, including active-thread and threadless diagnostics
@@ -115,6 +134,12 @@ Options:
   -V, --version                  Print version
 ```
 
+`--interactive`, `--dry-run`, and `--apply` are mutually exclusive.
+`--json` supports preview and direct apply; it cannot be combined with
+`--interactive`. JSON output keeps the existing machine-readable schema.
+Human output shows category totals, matched or removed files and database rows,
+skipped items, and file bytes. File bytes exclude SQLite space recovery.
+
 ## Compatibility and Safety
 
 Checked against Codex CLI **0.154.0** and its upstream database schemas:
@@ -122,7 +147,7 @@ Checked against Codex CLI **0.154.0** and its upstream database schemas:
 `queue_1.sqlite`, and `thread_history_1.sqlite`. Older optional tables are handled
 when present. Unknown database file versions stop database cleanup with a warning.
 
-- Run without `--apply` first. Quit Codex before applying cleanup. Current Codex
+- Review the interactive preview or run `--dry-run` first. Quit Codex before applying cleanup. Current Codex
   writer locks are respected, but older clients and other filesystem writers may
   not participate in that coordination.
 - Pinned sessions, sessions with queued input or unfinished goals/turns, and
@@ -130,6 +155,10 @@ when present. Unknown database file versions stop database cleanup with a warnin
 - Installed `plugins/cache/` bundles, temporary plugin checkouts, `tmp/arg0/`,
   and lock files are preserved regardless of age. Configuration, credentials,
   skills, attachments, and generated memory files are outside the default scope.
+- The `.tmp` file pass uses the same retention window, skips symlinks, and leaves
+  directories intact. It excludes `skills/`, `attachments/`, `memories/`,
+  `thread-writer-locks/`, Git metadata, and the protected runtime/plugin paths
+  above. Trees already covered by the normal cleanup pass are not counted twice.
 - `--days` must be non-negative and fit a cutoff on or after the Unix epoch.
 - Relative rollout paths resolve under the Codex home directory. Rollouts must
   be regular `.jsonl` or `.jsonl.zst` files in `sessions/` or `archived_sessions/`,
@@ -163,7 +192,7 @@ cargo test
 For a local behavior check, run a dry run against a Codex home directory:
 
 ```sh
-cargo run -- --codex-home ~/.codex
+cargo run -- --codex-home ~/.codex --dry-run
 ```
 
 ## License

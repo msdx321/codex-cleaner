@@ -1,8 +1,11 @@
 mod cli;
 mod fs_clean;
+mod interactive;
 mod sqlite_clean;
 mod summary;
 
+use std::io::{self, IsTerminal};
+use std::path::Path;
 use std::time::{Duration as StdDuration, SystemTime};
 
 use anyhow::Context;
@@ -20,9 +23,16 @@ fn main() {
 }
 
 fn run() -> anyhow::Result<()> {
-    let args = Args::parse();
-    if args.days < 0 {
-        anyhow::bail!("--days must be non-negative");
+    let mut args = Args::parse();
+    let terminal = io::stdin().is_terminal() && io::stdout().is_terminal();
+    let interactive = args.interactive || (terminal && !args.apply && !args.dry_run && !args.json);
+    anyhow::ensure!(
+        !interactive || terminal,
+        "interactive mode requires a terminal on stdin and stdout; use --dry-run or --apply for scripts"
+    );
+    if interactive && !interactive::configure(&mut args)? {
+        println!("Cancelled. No changes made.");
+        return Ok(());
     }
 
     let codex_home = args
@@ -38,15 +48,49 @@ fn run() -> anyhow::Result<()> {
         .checked_add(StdDuration::from_secs(cutoff_unix.try_into()?))
         .context("retention cutoff before unix epoch")?;
 
-    let mut summary = Summary::new(&codex_home, cutoff_unix, cutoff_dt.to_rfc3339(), args.apply);
+    let summary = clean(
+        &args,
+        &codex_home,
+        cutoff_unix,
+        cutoff_system,
+        &cutoff_dt.to_rfc3339(),
+    )?;
+    report(&args, &summary)?;
+    if interactive && interactive::confirm_apply()? {
+        args.apply = true;
+        let summary = clean(
+            &args,
+            &codex_home,
+            cutoff_unix,
+            cutoff_system,
+            &cutoff_dt.to_rfc3339(),
+        )?;
+        report(&args, &summary)?;
+    } else if interactive {
+        println!("No changes made.");
+    }
+    Ok(())
+}
+
+fn clean(
+    args: &Args,
+    codex_home: &Path,
+    cutoff_unix: i64,
+    cutoff_system: SystemTime,
+    cutoff: &str,
+) -> anyhow::Result<Summary> {
+    let mut summary = Summary::new(codex_home, cutoff_unix, cutoff.to_owned(), args.apply);
 
     if args.compact_memories {
-        let path = fs_clean::write_memory_compaction_note(&codex_home, args.apply)?;
+        let path = fs_clean::write_memory_compaction_note(codex_home, args.apply)?;
         summary.memory_compaction_note = Some(path.display().to_string());
     }
-    fs_clean::clean_generated_trees(&codex_home, cutoff_system, args.apply, &mut summary);
-    sqlite_clean::clean_sqlite(&codex_home, cutoff_unix, &args, &mut summary);
+    fs_clean::clean_generated_trees(codex_home, cutoff_system, args.apply, &mut summary);
+    sqlite_clean::clean_sqlite(codex_home, cutoff_unix, args, &mut summary);
+    Ok(summary)
+}
 
+fn report(args: &Args, summary: &Summary) -> anyhow::Result<()> {
     if args.json {
         println!("{}", serde_json::to_string_pretty(&summary)?);
     } else {

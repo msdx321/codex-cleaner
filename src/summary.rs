@@ -49,41 +49,55 @@ impl Summary {
     }
 
     pub fn print_human(&self) {
-        let mode = if self.apply { "apply" } else { "dry-run" };
-        println!("codex-cleaner {mode}");
-        println!("codex_home: {}", self.codex_home);
-        println!("cutoff: {}", self.cutoff);
+        let mode = if self.apply {
+            "Cleanup results"
+        } else {
+            "Cleanup preview (no changes)"
+        };
+        println!("codex-cleaner | {mode}");
+        println!("Home:   {}", self.codex_home);
+        println!("Before: {}", self.cutoff);
         println!();
 
+        let width = self
+            .buckets
+            .keys()
+            .map(String::len)
+            .max()
+            .unwrap_or(8)
+            .max(8);
+        if self.apply {
+            println!(
+                "Files and DB rows show removed/matched; Dirs shows empty directories removed."
+            );
+        }
+        println!(
+            "{:<width$}  {:>15}  {:>15}  {:>12}  {:>7}  {:>7}",
+            "Category", "Files", "DB rows", "File bytes", "Dirs", "Skipped"
+        );
+        let mut total = Bucket::default();
         for (name, bucket) in &self.buckets {
             if bucket.is_empty() {
                 continue;
             }
-            println!("{name}:");
-            if bucket.matched_files > 0 || bucket.deleted_files > 0 || bucket.deleted_dirs > 0 {
-                println!(
-                    "  files: matched {}, deleted {}, bytes {}",
-                    bucket.matched_files,
-                    bucket.deleted_files,
-                    display_bytes(if self.apply {
-                        bucket.deleted_bytes
-                    } else {
-                        bucket.matched_bytes
-                    })
-                );
-                if bucket.deleted_dirs > 0 {
-                    println!("  empty dirs removed: {}", bucket.deleted_dirs);
-                }
-            }
-            if bucket.matched_rows > 0 || bucket.deleted_rows > 0 {
-                println!(
-                    "  rows: matched {}, deleted {}",
-                    bucket.matched_rows, bucket.deleted_rows
-                );
-            }
-            if bucket.skipped > 0 {
-                println!("  skipped: {}", bucket.skipped);
-            }
+            bucket.print_row(name, width, self.apply);
+            total.matched_files += bucket.matched_files;
+            total.deleted_files += bucket.deleted_files;
+            total.matched_rows += bucket.matched_rows;
+            total.deleted_rows += bucket.deleted_rows;
+            total.matched_bytes += bucket.matched_bytes;
+            total.deleted_bytes += bucket.deleted_bytes;
+            total.deleted_dirs += bucket.deleted_dirs;
+            total.skipped += bucket.skipped;
+        }
+        total.print_row("Total", width, self.apply);
+        println!();
+        if total.matched_files == 0 && total.matched_rows == 0 {
+            println!("No expired files or database rows matched.");
+        }
+        println!("File bytes exclude space recovered by SQLite maintenance.");
+        if !self.apply {
+            println!("Empty directories are checked during apply.");
         }
 
         if let Some(path) = &self.memory_compaction_note {
@@ -102,6 +116,34 @@ impl Summary {
 }
 
 impl Bucket {
+    fn print_row(&self, name: &str, width: usize, apply: bool) {
+        let count = |matched, deleted| {
+            if apply {
+                format!("{deleted}/{matched}")
+            } else {
+                format!("{matched}")
+            }
+        };
+        let bytes = if apply {
+            self.deleted_bytes
+        } else {
+            self.matched_bytes
+        };
+        let dirs = if apply {
+            self.deleted_dirs.to_string()
+        } else {
+            "-".to_owned()
+        };
+        println!(
+            "{name:<width$}  {:>15}  {:>15}  {:>12}  {:>7}  {:>7}",
+            count(self.matched_files, self.deleted_files),
+            count(self.matched_rows, self.deleted_rows),
+            display_bytes(bytes),
+            dirs,
+            self.skipped,
+        );
+    }
+
     fn is_empty(&self) -> bool {
         self.matched_files == 0
             && self.deleted_files == 0
