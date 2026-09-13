@@ -3,11 +3,67 @@ use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 use anyhow::Context;
-use walkdir::WalkDir;
+use walkdir::{DirEntry, WalkDir};
 
 use crate::summary::Summary;
 
 const MEMORY_COMPACTION_NOTE: &str = include_str!("../templates/memory_compaction.md");
+
+const GENERATED_TREES: &[(&str, &str)] = &[
+    ("cache", "cache"),
+    ("tmp", "tmp"),
+    ("dot-tmp", ".tmp"),
+    ("file-logs", "log"),
+];
+const TEMP_FILE_EXTENSIONS: &[&str] = &["tmp"];
+
+#[derive(Clone, Copy)]
+enum CleanupScope {
+    GeneratedTree,
+    TemporaryFiles,
+}
+
+impl CleanupScope {
+    fn includes_entry(self, entry: &DirEntry) -> bool {
+        if entry.depth() == 0 {
+            return true;
+        }
+        let name = entry.file_name();
+        // Codex owns these runtime locks and plugin checkouts, regardless of age.
+        if matches!(
+            name.to_str(),
+            Some("arg0" | "plugins" | "marketplaces" | "bundled-marketplaces")
+        ) || name.to_string_lossy().ends_with(".lock")
+        {
+            return false;
+        }
+        match self {
+            Self::GeneratedTree => true,
+            Self::TemporaryFiles => {
+                name != ".git"
+                    && !(entry.depth() == 1
+                        && (GENERATED_TREES.iter().any(|(_, path)| name == *path)
+                            || matches!(
+                                name.to_str(),
+                                Some("skills" | "attachments" | "memories" | "thread-writer-locks")
+                            )))
+            }
+        }
+    }
+
+    fn matches_file(self, path: &Path) -> bool {
+        match self {
+            Self::GeneratedTree => true,
+            Self::TemporaryFiles => path.extension().is_some_and(|extension| {
+                TEMP_FILE_EXTENSIONS.iter().any(|item| extension == *item)
+            }),
+        }
+    }
+
+    fn removes_empty_dirs(self) -> bool {
+        matches!(self, Self::GeneratedTree)
+    }
+}
 
 pub fn clean_generated_trees(
     codex_home: &Path,
@@ -15,16 +71,28 @@ pub fn clean_generated_trees(
     apply: bool,
     summary: &mut Summary,
 ) {
-    for (bucket, rel) in [
-        ("cache", "cache"),
-        ("tmp", "tmp"),
-        ("dot-tmp", ".tmp"),
-        ("file-logs", "log"),
-    ] {
+    for &(bucket, rel) in GENERATED_TREES {
         let root = codex_home.join(rel);
-        if let Err(err) = clean_tree(bucket, &root, cutoff, apply, summary) {
+        if let Err(err) = clean_tree(
+            bucket,
+            &root,
+            cutoff,
+            apply,
+            CleanupScope::GeneratedTree,
+            summary,
+        ) {
             summary.warn(format!("failed to clean {}: {err:#}", root.display()));
         }
+    }
+    if let Err(err) = clean_tree(
+        "tmp-files",
+        codex_home,
+        cutoff,
+        apply,
+        CleanupScope::TemporaryFiles,
+        summary,
+    ) {
+        summary.warn(format!("failed to clean .tmp files: {err:#}"));
     }
 }
 
@@ -48,6 +116,7 @@ fn clean_tree(
     root: &Path,
     cutoff: SystemTime,
     apply: bool,
+    scope: CleanupScope,
     summary: &mut Summary,
 ) -> anyhow::Result<()> {
     if !root.try_exists()? {
@@ -63,23 +132,17 @@ fn clean_tree(
         .follow_links(false)
         .follow_root_links(false)
         .into_iter()
-        .filter_entry(|entry| {
-            // Codex owns these runtime locks and plugin checkouts, regardless of age.
-            !matches!(
-                entry.file_name().to_str(),
-                Some("arg0" | "plugins" | "marketplaces" | "bundled-marketplaces")
-            ) && !entry.file_name().to_string_lossy().ends_with(".lock")
-        })
+        .filter_entry(|entry| scope.includes_entry(entry))
     {
         let entry = entry?;
         let path = entry.path();
         if entry.file_type().is_dir() {
-            if entry.metadata()?.modified()? < cutoff {
+            if scope.removes_empty_dirs() && entry.metadata()?.modified()? < cutoff {
                 dirs.push(path.to_path_buf());
             }
             continue;
         }
-        if !entry.file_type().is_file() {
+        if !entry.file_type().is_file() || !scope.matches_file(path) {
             continue;
         }
 
