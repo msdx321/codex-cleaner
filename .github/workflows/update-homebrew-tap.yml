@@ -1,0 +1,42 @@
+name: Update Homebrew tap
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: homebrew-tap-update
+  cancel-in-progress: false
+
+jobs:
+  update-tap:
+    if: github.event.release.prerelease == false && github.event.release.draft == false
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout Homebrew tap
+        uses: actions/checkout@v7
+        with:
+          repository: msdx321/homebrew-tap
+          ref: main
+          ssh-key: ${{ secrets.HOMEBREW_TAP_DEPLOY_KEY }}
+
+      - uses: astral-sh/setup-uv@v10.0.1
+
+      - name: Update formula from the published release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          uv run --no-project --python 3.13 .github/scripts/update-codex-cleaner.py
+          if git diff --quiet -- Formula/codex-cleaner.rb; then
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add Formula/codex-cleaner.rb
+          git commit -m 'chore(formula): update codex-cleaner release'
+          git pull --rebase
+          git push
