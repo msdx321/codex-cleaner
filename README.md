@@ -21,6 +21,8 @@ under the Codex home directory:
   as `tmp-files` (excluding protected directories listed below)
 - old session rows, matching rollout files, and associated history, metadata,
   memory, queue revision, and completed-goal rows
+- old shell snapshots and TUI reference capability files belonging to sessions
+  selected for deletion
 - old log rows in `logs_2.sqlite`
 - orphan log rows whose thread no longer exists
 
@@ -138,21 +140,26 @@ skipped items, and file bytes. File bytes exclude SQLite space recovery.
 
 ## Compatibility and Safety
 
-Checked against Codex CLI **0.154.0** and its upstream database schemas:
-`state_5.sqlite`, `logs_2.sqlite`, `memories_1.sqlite`, `goals_1.sqlite`,
+Checked against installed Codex CLI **0.160.1** and its local database schemas:
+`state_5.sqlite`, `logs_2.sqlite`, `memories_1.sqlite`, `memories_v2_1.sqlite`, `goals_1.sqlite`,
 `queue_1.sqlite`, and `thread_history_1.sqlite`. Older optional tables are handled
-when present. Unknown database file versions stop database cleanup with a warning.
+when present, including thread attachments. Both memory databases are cleaned
+independently, and each receives its own consolidation request when selected
+memory rows are removed. Unknown database file versions stop database cleanup
+with a warning.
 
 - Review the interactive preview or run `--dry-run` first. Quit Codex before applying cleanup. Current Codex
   writer locks are respected, but older clients and other filesystem writers may
   not participate in that coordination.
 - Pinned sessions, sessions with queued input or unfinished goals/turns, and
-  sessions with recent database activity or recently modified rollouts are kept.
+  sessions with running memory extraction jobs, recent database activity, or
+  recently modified rollouts are kept. Shell snapshots and TUI reference files
+  are removed only for eligible sessions and only when the files are also old.
 - Installed `plugins/cache/` bundles, temporary plugin checkouts, `tmp/arg0/`,
   and lock files are preserved regardless of age. Configuration, credentials,
   skills, attachments, and generated memory files are outside the default scope.
 - The `.tmp` file pass uses the same retention window, skips symlinks, and leaves
-  directories intact. It excludes `skills/`, `attachments/`, `memories/`,
+  directories intact. It excludes `skills/`, `attachments/`, `memories/`, `memories_v2/`,
   `thread-writer-locks/`, Git metadata, and the protected runtime/plugin paths
   above. Trees already covered by the normal cleanup pass are not counted twice.
 - `--days` must be non-negative and fit a cutoff on or after the Unix epoch.

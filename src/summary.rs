@@ -93,7 +93,11 @@ impl Summary {
         total.print_row("Total", width, self.apply);
         println!();
         if total.matched_files == 0 && total.matched_rows == 0 {
-            println!("No expired files or database rows matched.");
+            if self.warnings.is_empty() {
+                println!("No expired files or database rows matched.");
+            } else {
+                println!("No matches were recorded; cleanup was incomplete.");
+            }
         }
         println!("File bytes exclude space recovered by SQLite maintenance.");
         if !self.apply {

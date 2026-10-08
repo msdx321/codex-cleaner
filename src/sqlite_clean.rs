@@ -14,6 +14,7 @@ const DATABASES: &[(&str, &str)] = &[
     ("state", "state_5.sqlite"),
     ("logs", "logs_2.sqlite"),
     ("memories", "memories_1.sqlite"),
+    ("memories_v2", "memories_v2_1.sqlite"),
     ("goals", "goals_1.sqlite"),
     ("queue", "queue_1.sqlite"),
     ("history", "thread_history_1.sqlite"),
@@ -68,12 +69,12 @@ fn clean_databases(
     for entry in fs::read_dir(&sqlite_home)? {
         let name = entry?.file_name();
         let name = name.to_string_lossy();
-        if DATABASES.iter().any(|(_, filename)| {
-            let prefix = filename.rsplit_once('_').expect("versioned database").0;
-            name.starts_with(&format!("{prefix}_"))
-                && name.ends_with(".sqlite")
-                && name != *filename
-        }) {
+        if !DATABASES.iter().any(|(_, filename)| name == *filename)
+            && DATABASES.iter().any(|(_, filename)| {
+                let prefix = filename.rsplit_once('_').expect("versioned database").0;
+                name.starts_with(&format!("{prefix}_")) && name.ends_with(".sqlite")
+            })
+        {
             anyhow::bail!("unsupported database version {name}; refusing to guess its schema");
         }
     }
@@ -103,11 +104,17 @@ fn clean_databases(
     };
     let tx = connection.transaction_with_behavior(behavior)?;
     tx.execute_batch("CREATE TEMP TABLE cleanup_threads (id TEXT PRIMARY KEY)")?;
-    let files = if attached.contains("state") {
+    let mut files = if attached.contains("state") {
         plan_sessions(&tx, home, cutoff, &attached, summary)?
+            .into_iter()
+            .map(|(path, len)| (path, len, "sessions"))
+            .collect::<Vec<_>>()
     } else {
         Vec::new()
     };
+    if attached.contains("state") {
+        files.extend(plan_thread_files(&tx, home, cutoff, summary)?);
+    }
     // Plan all statements before committing any database changes. Each row belongs
     // to one bucket in both preview and apply, even when several rules match it.
     let mut changes = Vec::new();
@@ -139,7 +146,12 @@ fn clean_databases(
             )?;
         }
     }
-    if attached.contains("memories") {
+    for schema in ["memories", "memories_v2"] {
+        if !attached.contains(schema) {
+            continue;
+        }
+        let bucket = format!("{schema}-db");
+        let jobs_bucket = format!("{schema}-jobs-db");
         let predicate = if prune_memories {
             format!(
                 "thread_id IN (SELECT id FROM cleanup_threads) OR (selected_for_phase2 = 0 AND MAX(source_updated_at, generated_at, COALESCE(last_usage, 0)) < {cutoff})"
@@ -147,27 +159,31 @@ fn clean_databases(
         } else {
             "thread_id IN (SELECT id FROM cleanup_threads)".to_owned()
         };
-        let selected: bool = tx.query_row(&format!("SELECT EXISTS(SELECT 1 FROM memories.stage1_outputs WHERE selected_for_phase2 != 0 AND ({predicate}))"), [], |row| row.get(0))?;
+        let selected: bool = tx.query_row(&format!("SELECT EXISTS(SELECT 1 FROM {schema}.stage1_outputs WHERE selected_for_phase2 != 0 AND ({predicate}))"), [], |row| row.get(0))?;
         prune_rows(
             &tx,
-            "memories.stage1_outputs",
+            &format!("{schema}.stage1_outputs"),
             &predicate,
-            "memories-db",
+            &bucket,
             apply,
             summary,
             &mut changes,
         )?;
         prune_rows(
             &tx,
-            "memories.jobs",
+            &format!("{schema}.jobs"),
             "kind = 'memory_stage1' AND job_key IN (SELECT id FROM cleanup_threads)",
-            "memory-jobs-db",
+            if schema == "memories" {
+                "memory-jobs-db"
+            } else {
+                &jobs_bucket
+            },
             apply,
             summary,
             &mut changes,
         )?;
         if apply && selected {
-            enqueue_global_consolidation(&tx)?;
+            enqueue_global_consolidation(&tx, schema)?;
         }
     }
     for (schema, tables, bucket) in [
@@ -193,7 +209,11 @@ fn clean_databases(
         ),
         (
             "state",
-            &["thread_dynamic_tools", "thread_artifacts"][..],
+            &[
+                "thread_dynamic_tools",
+                "thread_artifacts",
+                "thread_attachments",
+            ][..],
             "session-metadata-db",
         ),
     ] {
@@ -245,10 +265,10 @@ fn clean_databases(
             summary.bucket_mut(bucket).deleted_rows += count;
         }
         // Remove files only after SQL succeeds, so a schema error never destroys a rollout.
-        for (path, len) in files {
+        for (path, len, bucket) in files {
             match fs::remove_file(&path) {
                 Ok(()) => {
-                    let bucket = summary.bucket_mut("sessions");
+                    let bucket = summary.bucket_mut(bucket);
                     bucket.deleted_files += 1;
                     bucket.deleted_bytes += len;
                 }
@@ -357,6 +377,11 @@ fn plan_sessions(
     if attached.contains("history") {
         conditions.push("NOT EXISTS (SELECT 1 FROM history.thread_turns WHERE thread_id = threads.id AND completed_at IS NULL)".to_owned());
     }
+    for schema in ["memories", "memories_v2"] {
+        if attached.contains(schema) {
+            conditions.push(format!("NOT EXISTS (SELECT 1 FROM {schema}.jobs WHERE kind = 'memory_stage1' AND job_key = threads.id AND status = 'running')"));
+        }
+    }
     let query = format!(
         "SELECT id, rollout_path FROM state.threads WHERE {} ORDER BY updated_at, id",
         conditions.join(" AND ")
@@ -382,6 +407,58 @@ fn plan_sessions(
                 summary.bucket_mut("sessions").skipped += 1;
                 summary.warn(format!("skip session {id}: {err:#}"));
             }
+        }
+    }
+    Ok(files)
+}
+
+fn plan_thread_files(
+    connection: &Connection,
+    home: &Path,
+    cutoff: i64,
+    summary: &mut Summary,
+) -> anyhow::Result<Vec<(PathBuf, u64, &'static str)>> {
+    let mut files = Vec::new();
+    for directory in ["shell_snapshots", "tui-thread-reference-capabilities"] {
+        let root = home.join(directory);
+        ensure_no_symlinks(home, &root)?;
+        if !root.try_exists()? {
+            continue;
+        }
+        for entry in fs::read_dir(&root)? {
+            let entry = entry?;
+            if !entry.file_type()?.is_file() {
+                continue;
+            }
+            let name = entry.file_name();
+            let Some(name) = name.to_str() else {
+                continue;
+            };
+            let id = if directory == "shell_snapshots" {
+                if !name.ends_with(".sh") && !name.ends_with(".ps1") {
+                    continue;
+                }
+                name.split('.').next().context("snapshot filename")?
+            } else {
+                name
+            };
+            let selected: bool = connection.query_row(
+                "SELECT EXISTS(SELECT 1 FROM cleanup_threads WHERE id = ?)",
+                [id],
+                |row| row.get(0),
+            )?;
+            if !selected {
+                continue;
+            }
+            let metadata = entry.metadata()?;
+            let modified: chrono::DateTime<chrono::Utc> = metadata.modified()?.into();
+            if modified.timestamp() >= cutoff {
+                continue;
+            }
+            let bucket = summary.bucket_mut(directory);
+            bucket.matched_files += 1;
+            bucket.matched_bytes += metadata.len();
+            files.push((entry.path(), metadata.len(), directory));
         }
     }
     Ok(files)
@@ -474,10 +551,14 @@ fn ensure_no_symlinks(home: &Path, path: &Path) -> anyhow::Result<()> {
     }
     Ok(())
 }
-fn enqueue_global_consolidation(tx: &rusqlite::Transaction<'_>) -> anyhow::Result<()> {
+fn enqueue_global_consolidation(
+    tx: &rusqlite::Transaction<'_>,
+    schema: &str,
+) -> anyhow::Result<()> {
     tx.execute(
-        r#"
-INSERT INTO memories.jobs (
+        &format!(
+            r#"
+INSERT INTO {schema}.jobs (
     kind,
     job_key,
     status,
@@ -507,7 +588,8 @@ ON CONFLICT(kind, job_key) DO UPDATE SET
             THEN excluded.input_watermark
         ELSE COALESCE(jobs.input_watermark, 0) + 1
     END
-        "#,
+        "#
+        ),
         params![MEMORY_CONSOLIDATE_KIND, MEMORY_CONSOLIDATE_KEY],
     )?;
     Ok(())

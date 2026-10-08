@@ -45,7 +45,13 @@ impl CleanupScope {
                         && (GENERATED_TREES.iter().any(|(_, path)| name == *path)
                             || matches!(
                                 name.to_str(),
-                                Some("skills" | "attachments" | "memories" | "thread-writer-locks")
+                                Some(
+                                    "skills"
+                                        | "attachments"
+                                        | "memories"
+                                        | "memories_v2"
+                                        | "thread-writer-locks"
+                                )
                             )))
             }
         }
