@@ -26,7 +26,7 @@ pub fn clean_sqlite(
     args: &crate::cli::Args,
     summary: &mut Summary,
 ) {
-    if let Err(err) = clean_databases(
+    match clean_databases(
         codex_home,
         args.sqlite_home.as_deref().unwrap_or(codex_home),
         cutoff_unix,
@@ -35,7 +35,9 @@ pub fn clean_sqlite(
         args.prune_diagnostics,
         summary,
     ) {
-        summary.warn(format!("database cleanup failed: {err:#}"));
+        Ok(archives) if args.apply => archive_sessions(codex_home, args, archives, summary),
+        Ok(_) => {}
+        Err(err) => summary.warn(format!("database cleanup failed: {err:#}")),
     }
 }
 
@@ -47,7 +49,7 @@ fn clean_databases(
     prune_memories: bool,
     prune_diagnostics: bool,
     summary: &mut Summary,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<Vec<String>> {
     let sqlite_home = sqlite_home
         .canonicalize()
         .context("resolve SQLite directory")?;
@@ -103,7 +105,7 @@ fn clean_databases(
         TransactionBehavior::Deferred
     };
     let tx = connection.transaction_with_behavior(behavior)?;
-    tx.execute_batch("CREATE TEMP TABLE cleanup_threads (id TEXT PRIMARY KEY)")?;
+    tx.execute_batch("CREATE TEMP TABLE cleanup_threads (id TEXT PRIMARY KEY); CREATE TEMP TABLE archive_threads (id TEXT PRIMARY KEY);")?;
     let mut files = if attached.contains("state") {
         plan_sessions(&tx, home, cutoff, &attached, summary)?
             .into_iter()
@@ -259,6 +261,10 @@ fn clean_databases(
             &mut changes,
         )?;
     }
+    let archives = tx
+        .prepare("SELECT id FROM archive_threads ORDER BY id")?
+        .query_map([], |row| row.get::<_, String>(0))?
+        .collect::<Result<Vec<_>, _>>()?;
     tx.commit()?;
     if apply {
         for (_, bucket, count) in &changes {
@@ -285,7 +291,7 @@ fn clean_databases(
             }
         }
     }
-    Ok(())
+    Ok(archives)
 }
 
 fn maintain_database(connection: &Connection, schema: &str) -> anyhow::Result<()> {
@@ -354,7 +360,12 @@ fn plan_sessions(
         .prepare("PRAGMA state.table_info(threads)")?
         .query_map([], |row| row.get::<_, String>(1))?
         .collect::<Result<BTreeSet<_>, _>>()?;
-    let mut conditions = vec![format!("updated_at < {cutoff}")];
+    let mut conditions = vec![
+        format!("updated_at < {cutoff}"),
+        format!(
+            "(archived = 0 OR (archived = 1 AND archived_at IS NOT NULL AND archived_at < {cutoff}))"
+        ),
+    ];
     if columns.contains("recency_at") {
         conditions.push(format!("recency_at < {cutoff}"));
     }
@@ -383,19 +394,36 @@ fn plan_sessions(
         }
     }
     let query = format!(
-        "SELECT id, rollout_path FROM state.threads WHERE {} ORDER BY updated_at, id",
+        "SELECT id, rollout_path, archived FROM state.threads WHERE {} ORDER BY updated_at, id",
         conditions.join(" AND ")
     );
     let rows = connection
         .prepare(&query)?
         .query_map([], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, bool>(2)?,
+            ))
         })?
         .collect::<Result<Vec<_>, _>>()?;
     let mut files = Vec::new();
-    for (id, raw) in rows {
+    for (id, raw, archived) in rows {
         match session_files(home, &id, Path::new(&raw), cutoff) {
+            Ok(Some(candidates)) if !archived => {
+                if candidates.is_empty() {
+                    summary.session_archives.skipped += 1;
+                    continue;
+                }
+                connection.execute("INSERT INTO archive_threads VALUES (?)", [&id])?;
+            }
             Ok(Some(candidates)) => {
+                anyhow::ensure!(
+                    candidates
+                        .iter()
+                        .all(|(path, _)| path.starts_with(home.join("archived_sessions"))),
+                    "archived session rollout is outside the archive directory"
+                );
                 connection.execute("INSERT INTO cleanup_threads VALUES (?)", [&id])?;
                 let bucket = summary.bucket_mut("sessions");
                 bucket.matched_files += candidates.len() as u64;
@@ -409,7 +437,81 @@ fn plan_sessions(
             }
         }
     }
+    // The official archive command also visits descendants. Keep any ancestor
+    // whose active descendants failed the same age, pin, job, goal or lock checks.
+    if table_exists(connection, "state", "thread_spawn_edges")? {
+        let skipped = connection.execute(
+            "WITH RECURSIVE descendants(root, id) AS (
+                SELECT parent_thread_id, child_thread_id FROM state.thread_spawn_edges
+                UNION
+                SELECT d.root, e.child_thread_id FROM descendants d
+                JOIN state.thread_spawn_edges e ON e.parent_thread_id = d.id
+            ) DELETE FROM archive_threads WHERE id IN (
+                SELECT d.root FROM descendants d LEFT JOIN state.threads t ON t.id = d.id
+                WHERE t.id IS NULL OR (t.archived = 0 AND t.id NOT IN (SELECT id FROM archive_threads))
+            )", [],
+        )?;
+        summary.session_archives.skipped += skipped as u64;
+    }
+    let matched: i64 =
+        connection.query_row("SELECT COUNT(*) FROM archive_threads", [], |row| row.get(0))?;
+    summary.session_archives.matched += u64::try_from(matched)?;
     Ok(files)
+}
+
+fn archive_sessions(home: &Path, args: &crate::cli::Args, ids: Vec<String>, summary: &mut Summary) {
+    // Database and coordination locks have been released before invoking Codex.
+    for id in ids {
+        if let Err(err) = archive_session(home, args, &id) {
+            summary.warn(format!("archive session {id}: {err:#}"));
+        } else {
+            summary.session_archives.archived += 1;
+        }
+    }
+}
+
+fn archive_session(home: &Path, args: &crate::cli::Args, id: &str) -> anyhow::Result<()> {
+    let sqlite_home = args.sqlite_home.as_deref().unwrap_or(home);
+    let connection = Connection::open_with_flags(
+        sqlite_home.join("state_5.sqlite"),
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+    )?;
+    let already_archived: bool =
+        connection.query_row("SELECT archived FROM threads WHERE id = ?", [id], |row| {
+            row.get(0)
+        })?;
+    if already_archived {
+        return Ok(());
+    }
+    let mut command = std::process::Command::new("codex");
+    command
+        .env("CODEX_HOME", home)
+        .args(["archive", id])
+        .stdin(std::process::Stdio::null());
+    if let Some(sqlite_home) = &args.sqlite_home {
+        command.arg("-c").arg(format!(
+            "sqlite_home={}",
+            serde_json::to_string(sqlite_home)?
+        ));
+    }
+    let output = command
+        .output()
+        .context("run official codex archive command; install a Codex CLI supporting archive")?;
+    anyhow::ensure!(
+        output.status.success(),
+        "codex archive failed: {}",
+        String::from_utf8_lossy(&output.stderr).trim()
+    );
+    let archived: bool = connection.query_row(
+        "SELECT archived = 1 AND archived_at IS NOT NULL FROM threads WHERE id = ?",
+        [id],
+        |row| row.get(0),
+    )?;
+    anyhow::ensure!(
+        archived,
+        "Codex did not confirm the archived state; session retained"
+    );
+    Ok(())
 }
 
 fn plan_thread_files(

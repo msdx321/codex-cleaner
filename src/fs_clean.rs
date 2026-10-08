@@ -21,6 +21,7 @@ const TEMP_FILE_EXTENSIONS: &[&str] = &["tmp"];
 enum CleanupScope {
     GeneratedTree,
     TemporaryFiles,
+    DaemonLogs,
 }
 
 impl CleanupScope {
@@ -39,6 +40,7 @@ impl CleanupScope {
         }
         match self {
             Self::GeneratedTree => true,
+            Self::DaemonLogs => !entry.file_type().is_dir(),
             Self::TemporaryFiles => {
                 name != ".git"
                     && !(entry.depth() == 1
@@ -51,6 +53,9 @@ impl CleanupScope {
                                         | "memories"
                                         | "memories_v2"
                                         | "thread-writer-locks"
+                                        | "packages"
+                                        | "app-server-daemon"
+                                        | "app-server-control"
                                 )
                             )))
             }
@@ -60,6 +65,10 @@ impl CleanupScope {
     fn matches_file(self, path: &Path) -> bool {
         match self {
             Self::GeneratedTree => true,
+            Self::DaemonLogs => path.file_name().is_some_and(|name| {
+                let name = name.to_string_lossy();
+                name.ends_with(".log") || name.ends_with(".log.previous")
+            }),
             Self::TemporaryFiles => path.extension().is_some_and(|extension| {
                 TEMP_FILE_EXTENSIONS.iter().any(|item| extension == *item)
             }),
@@ -89,6 +98,16 @@ pub fn clean_generated_trees(
         ) {
             summary.warn(format!("failed to clean {}: {err:#}", root.display()));
         }
+    }
+    if let Err(err) = clean_tree(
+        "app-server-logs",
+        &codex_home.join("app-server-daemon"),
+        cutoff,
+        apply,
+        CleanupScope::DaemonLogs,
+        summary,
+    ) {
+        summary.warn(format!("failed to clean app-server logs: {err:#}"));
     }
     if let Err(err) = clean_tree(
         "tmp-files",

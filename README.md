@@ -17,9 +17,14 @@ under the Codex home directory:
 - `tmp/`
 - `.tmp/` (excluding runtime locks and plugin checkouts)
 - old files in `log/`
+- old daemon log files in `app-server-daemon/` (including rotated logs)
+- obsolete releases in `packages/app-server-daemon/releases/`; the current
+  release, auto-update target, running releases, and newer versions are preserved
 - old files ending in `.tmp` elsewhere under the Codex home directory, reported
   as `tmp-files` (excluding protected directories listed below)
-- old session rows, matching rollout files, and associated history, metadata,
+- expired active sessions, archived using the official `codex archive` command
+- sessions archived for another retention window, their matching rollout files,
+  and associated history, metadata,
   memory, queue revision, and completed-goal rows
 - old shell snapshots and TUI reference capability files belonging to sessions
   selected for deletion
@@ -29,6 +34,15 @@ under the Codex home directory:
 Optional flags can also prune stale memory stage-1 rows and remaining diagnostic
 log rows. `--compact-memories` writes an ad hoc note asking Codex to retain only
 important memory and discard transient history and tool-assignment prompts.
+
+With the default 30-day retention, inactive sessions are archived after 30 days
+and become eligible for deletion after another 30 days in the archive. Newly
+archived sessions are never deleted in the same pass. Archiving preserves their
+transcripts and metadata; restore them with `codex unarchive <UUID>`. This follows
+the [official Codex archive command](https://learn.chatgpt.com/docs/developer-commands#codex-archive-and-codex-unarchive).
+Codex does not document automatic expiry of local archived sessions; the cleaner
+enforces the retention window. Package cleanup uses version and runtime checks,
+rather than file age, so obsolete installations can be removed immediately.
 
 ## Install
 
@@ -134,13 +148,15 @@ Options:
 
 `--interactive`, `--dry-run`, and `--apply` are mutually exclusive.
 `--json` supports preview and direct apply; it cannot be combined with
-`--interactive`. JSON output keeps the existing machine-readable schema.
+`--interactive`. JSON output keeps existing cleanup bucket fields and adds
+`session_archives` (`matched`, `archived`, `skipped`) when archive work is reported.
 Human output shows category totals, matched or removed files and database rows,
-skipped items, and file bytes. File bytes exclude SQLite space recovery.
+skipped items, file bytes, and separate session archive totals. Archiving does not
+count as deleting files or recovering space. File bytes exclude SQLite space recovery.
 
 ## Compatibility and Safety
 
-Checked against installed Codex CLI **0.160.1** and its local database schemas:
+Checked against installed Codex CLI **0.161.0** and its local database schemas:
 `state_5.sqlite`, `logs_2.sqlite`, `memories_1.sqlite`, `memories_v2_1.sqlite`, `goals_1.sqlite`,
 `queue_1.sqlite`, and `thread_history_1.sqlite`. Older optional tables are handled
 when present, including thread attachments. Both memory databases are cleaned
@@ -155,12 +171,23 @@ with a warning.
   sessions with running memory extraction jobs, recent database activity, or
   recently modified rollouts are kept. Shell snapshots and TUI reference files
   are removed only for eligible sessions and only when the files are also old.
+- Archive apply requires `codex` on `PATH` with support for `codex archive`.
+  Preview uses read-only databases and does not invoke Codex. Because Codex archive
+  also visits spawned descendants, an ancestor is kept if any active descendant
+  fails the eligibility checks. Sessions with a missing archive timestamp are
+  kept rather than guessing how long they have been archived.
+- Package cleanup takes the existing installer lock and inspects running
+  executable paths on macOS or Linux. Symlinked cleanup roots, unknown package
+  layouts, and failures to inspect processes produce warnings. Package-internal
+  symlinks are removed without following them. Daemon PID files, sockets,
+  settings, and runtime locks are preserved.
 - Installed `plugins/cache/` bundles, temporary plugin checkouts, `tmp/arg0/`,
   and lock files are preserved regardless of age. Configuration, credentials,
   skills, attachments, and generated memory files are outside the default scope.
 - The `.tmp` file pass uses the same retention window, skips symlinks, and leaves
   directories intact. It excludes `skills/`, `attachments/`, `memories/`, `memories_v2/`,
-  `thread-writer-locks/`, Git metadata, and the protected runtime/plugin paths
+  `thread-writer-locks/`, `packages/`, `app-server-daemon/`,
+  `app-server-control/`, Git metadata, and the protected runtime/plugin paths
   above. Trees already covered by the normal cleanup pass are not counted twice.
 - `--days` must be non-negative and fit a cutoff on or after the Unix epoch.
 - Relative rollout paths resolve under the Codex home directory. Rollouts must

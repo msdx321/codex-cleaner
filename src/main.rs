@@ -1,5 +1,6 @@
 mod cli;
 mod fs_clean;
+mod install_clean;
 mod interactive;
 mod sqlite_clean;
 mod summary;
@@ -86,6 +87,7 @@ fn clean(
         summary.memory_compaction_note = Some(path.display().to_string());
     }
     fs_clean::clean_generated_trees(codex_home, cutoff_system, args.apply, &mut summary);
+    install_clean::clean_installations(codex_home, args.apply, &mut summary);
     sqlite_clean::clean_sqlite(codex_home, cutoff_unix, args, &mut summary);
     Ok(summary)
 }

@@ -15,6 +15,19 @@ pub struct Bucket {
     pub skipped: u64,
 }
 
+#[derive(Debug, Default, Serialize)]
+pub struct SessionArchives {
+    pub matched: u64,
+    pub archived: u64,
+    pub skipped: u64,
+}
+
+impl SessionArchives {
+    fn is_empty(&self) -> bool {
+        self.matched == 0 && self.archived == 0 && self.skipped == 0
+    }
+}
+
 #[derive(Debug, Serialize)]
 pub struct Summary {
     pub codex_home: String,
@@ -24,6 +37,8 @@ pub struct Summary {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub memory_compaction_note: Option<String>,
     pub buckets: BTreeMap<String, Bucket>,
+    #[serde(skip_serializing_if = "SessionArchives::is_empty")]
+    pub session_archives: SessionArchives,
     pub warnings: Vec<String>,
 }
 
@@ -36,6 +51,7 @@ impl Summary {
             apply,
             memory_compaction_note: None,
             buckets: BTreeMap::new(),
+            session_archives: SessionArchives::default(),
             warnings: Vec::new(),
         }
     }
@@ -67,9 +83,7 @@ impl Summary {
             .unwrap_or(8)
             .max(8);
         if self.apply {
-            println!(
-                "Files and DB rows show removed/matched; Dirs shows empty directories removed."
-            );
+            println!("Files and DB rows show removed/matched; Dirs shows directories removed.");
         }
         println!(
             "{:<width$}  {:>15}  {:>15}  {:>12}  {:>7}  {:>7}",
@@ -92,7 +106,24 @@ impl Summary {
         }
         total.print_row("Total", width, self.apply);
         println!();
-        if total.matched_files == 0 && total.matched_rows == 0 {
+        if !self.session_archives.is_empty() {
+            if self.apply {
+                println!(
+                    "Sessions archived: {}/{} (skipped: {}).",
+                    self.session_archives.archived,
+                    self.session_archives.matched,
+                    self.session_archives.skipped
+                );
+            } else {
+                println!(
+                    "Sessions to archive: {} (skipped: {}).",
+                    self.session_archives.matched, self.session_archives.skipped
+                );
+            }
+            println!("Archived sessions remain restorable for another retention window.");
+        }
+        if total.matched_files == 0 && total.matched_rows == 0 && self.session_archives.matched == 0
+        {
             if self.warnings.is_empty() {
                 println!("No expired files or database rows matched.");
             } else {
@@ -101,7 +132,7 @@ impl Summary {
         }
         println!("File bytes exclude space recovered by SQLite maintenance.");
         if !self.apply {
-            println!("Empty directories are checked during apply.");
+            println!("Empty cache directories are checked during apply.");
         }
 
         if let Some(path) = &self.memory_compaction_note {
